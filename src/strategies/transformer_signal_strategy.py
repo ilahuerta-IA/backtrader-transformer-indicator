@@ -144,7 +144,7 @@ if __name__ == '__main__':
         timeframe=bt.TimeFrame.Minutes, compression=5)
     
     cerebro.adddata(data)
-    cerebro.broker.setcash(10000.0)
+    cerebro.broker.setcash(100000.0)
     
     print("--- Running Backtest in Bar-by-Bar Mode ---")
     cerebro.run()
