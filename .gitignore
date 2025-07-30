@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual Environment
+venv/
+.venv/
+env/
+.env
+pip-selfcheck.json
+
+# IDE-specific files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
