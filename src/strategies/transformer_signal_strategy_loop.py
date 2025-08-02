@@ -35,7 +35,7 @@ except Exception:
     print("FATAL: Could not determine project paths. Please run from the project root.")
     exit()
 
-# --- HELPER FUNCTION (Unchanged) ---
+# --- HELPER FUNCTION and INDICATORS (All Unchanged) ---
 def create_time_features_for_window(dt_index: pd.DatetimeIndex) -> np.ndarray:
     features = pd.DataFrame(index=dt_index)
     features['hour'] = (dt_index.hour / 23.0) - 0.5
@@ -44,12 +44,10 @@ def create_time_features_for_window(dt_index: pd.DatetimeIndex) -> np.ndarray:
     features['month'] = ((dt_index.month - 1) / 11.0) - 0.5
     return features.values
 
-# --- INDICATOR: AI PRICE PREDICTION (Unchanged) ---
 class TransformerPredictionIndicator(bt.Indicator):
     lines = ('prediction',)
     params = (('models_dir', str(MODELS_DIR)),)
     plotinfo = dict(subplot=False, plotname='AI Prediction')
-    
     def __init__(self):
         super().__init__()
         self.p.models_dir = Path(self.p.models_dir)
@@ -61,7 +59,6 @@ class TransformerPredictionIndicator(bt.Indicator):
         self.model.eval()
         self.history_len = config.context_length + max(config.lags_sequence or [0])
         self.addminperiod(self.history_len)
-
     def next(self):
         datetimes = [self.data.num2date(self.data.datetime[-i]) for i in range(self.history_len)]
         datetimes.reverse(); dt_index = pd.to_datetime(datetimes)
@@ -77,22 +74,19 @@ class TransformerPredictionIndicator(bt.Indicator):
         final_pred = self.scaler.inverse_transform(outputs.sequences.mean(dim=1).cpu().numpy()[:, -1].reshape(-1, 1))[0][0]
         self.lines.prediction[0] = final_pred
 
-# --- INDICATOR: ANGLE OF A LINE (Unchanged) ---
 class AngleIndicator(bt.Indicator):
     lines = ('angle',)
     params = (('angle_lookback', 5), ('scale_factor', 50000),)
     plotinfo = dict(subplot=True, plotname='Angle (Degrees)')
-    
     def __init__(self):
         self.addminperiod(self.p.angle_lookback)
         super().__init__()
-
     def next(self):
         rise = (self.data0[0] - self.data0[-self.p.angle_lookback + 1]) * self.p.scale_factor
         run = self.p.angle_lookback
         self.lines.angle[0] = np.degrees(np.arctan2(rise, run))
 
-# --- MAIN TRADING STRATEGY ---
+# --- MAIN TRADING STRATEGY with DIVERGENCE ---
 class TransformerSignalStrategy(bt.Strategy):
     params = (
         ('pred_smooth_period', 5),
@@ -100,17 +94,11 @@ class TransformerSignalStrategy(bt.Strategy):
         ('sma_long_term_period', 100),
         ('sma_short_term_period', 5),
         ('min_angle_for_entry', 55.0),
-        
-        # --- NEW PARAMETER ---
-        # The maximum allowed absolute divergence between the prediction angle
-        # and the price angle to consider the signal "coherent".
-        ('max_abs_divergence_entry', 0.30),
-        
+        ('max_abs_divergence_entry', 0.1),
         ('position_size', 10000),
     )
 
     def __init__(self):
-        # --- Standard Indicators (Unchanged) ---
         self.prediction = TransformerPredictionIndicator(self.data)
         self.smoothed_prediction = bt.indicators.SMA(self.prediction, period=self.p.pred_smooth_period)
         self.sma_short_term = bt.indicators.SMA(self.data.close, period=self.p.sma_short_term_period)
@@ -118,68 +106,56 @@ class TransformerSignalStrategy(bt.Strategy):
         self.sma_momentum = bt.indicators.SMA(self.data.close, period=self.p.sma_momentum_period)
         self.smooth_cross_momentum = bt.indicators.CrossOver(self.smoothed_prediction, self.sma_momentum)
         
-        # --- Angle Calculations ---
         self.angle_prediction = AngleIndicator(self.smoothed_prediction, angle_lookback=self.p.pred_smooth_period)
         self.angle_price = AngleIndicator(self.sma_short_term, angle_lookback=self.p.sma_short_term_period)
-        
-        # --- Min/Max Tracking Variables (for final report) ---
-        self.max_abs_divergence = 0.0
-        self.min_abs_divergence = float('inf')
 
     def next(self):
-        # --- Synchronization Gate ---
         if np.isnan(self.angle_prediction[0]) or np.isnan(self.angle_price[0]):
             return
 
-        # --- Calculate Absolute Divergence and Update Min/Max ---
-        divergence = self.angle_prediction[0] - self.angle_price[0]
-        abs_divergence = abs(divergence)
-        
-        self.max_abs_divergence = max(self.max_abs_divergence, abs_divergence)
-        if abs_divergence > 0:
-            self.min_abs_divergence = min(self.min_abs_divergence, abs_divergence)
-
-        # --- Exit Logic (UNCHANGED) ---
         if self.position:
             if self.smooth_cross_momentum[0] < 0:
                 self.close()
             return
 
-        # --- Entry Conditions ---
+        abs_divergence = abs(self.angle_prediction[0] - self.angle_price[0])
+        
         is_bullish_filter = (self.sma_long_term[0] < self.prediction[0] and self.sma_momentum[0] < self.prediction[0])
         is_strong_momentum = self.smoothed_prediction[0] > self.smoothed_prediction[-1]
         is_crossover_signal = self.smooth_cross_momentum[0] > 0
         is_steep_angle = self.angle_prediction[0] > self.p.min_angle_for_entry
-        
-        # --- NEW CONDITION ---
-        # Checks if the divergence is below the configured threshold.
         is_coherent_signal = abs_divergence < self.p.max_abs_divergence_entry
 
-        # --- Trade Execution with the new condition ---
         if is_bullish_filter and is_strong_momentum and is_crossover_signal and is_steep_angle and is_coherent_signal:
-            print(f"--- BUY SIGNAL @ {self.data.datetime.date(0)} (Angle: {self.angle_prediction[0]:.2f}°, Abs Divergence: {abs_divergence:.2f}° < {self.p.max_abs_divergence_entry}°) ---")
             self.buy(size=self.p.position_size)
     
     def stop(self):
-        """
-        Called at the end of the backtest to print the final summary.
-        """
-        print("\n--- Backtest Finished ---")
-        print(f"Final Portfolio Value: {self.broker.getvalue():.2f}")
-        
-        print("\n--- Absolute Divergence Angle Analysis ---")
-        if self.min_abs_divergence == float('inf'):
-            print("No divergence data was calculated.")
-        else:
-            print(f"  - Minimum Absolute Divergence Recorded: {self.min_abs_divergence:.2f}°")
-            print(f"  - Maximum Absolute Divergence Recorded: {self.max_abs_divergence:.2f}°")
-        print("----------------------------------------\n")
+        # The 'stop' method is run for each optimization pass.
+        # We can add a print here to see the progress.
+        pass
 
-# --- Cerebro Execution ---
+# --- Cerebro Execution for OPTIMIZATION ---
 if __name__ == '__main__':
-    cerebro = bt.Cerebro(runonce=False)
-    cerebro.addstrategy(TransformerSignalStrategy)
+    # We force bar-by-bar execution for the optimization runs. This ensures
+    # our custom `AngleIndicator` with its Python `next()` method is calculated
+    # correctly for every single bar in every run. It will be slower, but correct.
+    cerebro = bt.Cerebro(runonce=False, optreturn=False)
     
+    # --- Add the strategy for optimization ---
+    cerebro.optstrategy(
+        TransformerSignalStrategy,
+        # Define the ranges of values to test for the key parameters
+        #min_angle_for_entry=[65, 70],                      # Test angles: 65, 70
+        #max_abs_divergence_entry=np.arange(0.1, 0.5, 0.2) # Test divergences: 0.1, 0.3
+        min_angle_for_entry=range(65, 90, 5),      # Test angles: 75, 80, 85
+        #max_abs_divergence_entry=np.arange(0.1, 0.6, 0.2) # Test divergences: 0.1, 0.3, 0.5
+    )
+    
+    # --- Add Analyzers to measure performance ---
+    cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name='tradeanalyzer')
+    cerebro.addanalyzer(bt.analyzers.Returns, _name='returns')
+
+    # Load data
     data = bt.feeds.GenericCSVData(
         dataname=str(DATA_PATH), dtformat=('%Y%m%d'), tmformat=('%H:%M:%S'),
         datetime=0, time=1, open=2, high=3, low=4, close=5, volume=6,
@@ -188,9 +164,45 @@ if __name__ == '__main__':
     cerebro.adddata(data)
     cerebro.broker.setcash(100000.0)
     
-    print("--- Running Backtest ---")
-    cerebro.run()
+    print("--- Running Strategy Optimization ---")
+    # cerebro.run() returns a list of lists, where each inner list contains the results of one run.
+    optimization_results = cerebro.run()
     
-    # Optional: uncomment to see the plot.
-    print("Generating Plot...")
-    cerebro.plot(style='line')
+    # --- Process and Print the Results ---
+    final_results_list = []
+    for single_run_results in optimization_results:
+        for strategy_result in single_run_results:
+            # Access parameters for this run
+            params = strategy_result.p
+            
+            # Access analyzers for this run
+            trade_analysis = strategy_result.analyzers.tradeanalyzer.get_analysis()
+            return_analysis = strategy_result.analyzers.returns.get_analysis()
+            
+            total_trades = trade_analysis.get('total', {}).get('total', 0)
+            
+            # Calculate Profit Factor
+            profit_factor = 0.0
+            if 'won' in trade_analysis and 'lost' in trade_analysis:
+                total_won = trade_analysis.get('won', {}).get('pnl', {}).get('total', 0)
+                total_lost = abs(trade_analysis.get('lost', {}).get('pnl', {}).get('total', 0))
+                if total_lost > 0:
+                    profit_factor = total_won / total_lost
+
+            final_results_list.append({
+                'min_angle': params.min_angle_for_entry,
+                'max_divergence': params.max_abs_divergence_entry,
+                'profit_factor': profit_factor,
+                'total_trades': total_trades,
+                # The final portfolio value is in the 'returns' analyzer
+                'final_value': return_analysis.get('rtot', 1) * cerebro.broker.startingcash
+            })
+
+    # Sort results to find the best combination
+    sorted_results = sorted(final_results_list, key=lambda x: x['profit_factor'], reverse=True)
+    
+    print("\n--- Top Parameter Combinations by Profit Factor ---")
+    print(f"{'Min Angle':<12} {'Max Divergence':<15} {'Profit Factor':<15} {'Total Trades':<15} {'Final Value':<15}")
+    print("-" * 75)
+    for res in sorted_results:
+        print(f"{res['min_angle']:<12} {res['max_divergence']:<15.2f} {res['profit_factor']:<15.2f} {res['total_trades']:<15} {res['final_value']:<15.2f}")

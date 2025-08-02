@@ -2,6 +2,17 @@
 
 A ready-to-use example of a custom `backtrader` indicator that integrates a pre-trained Hugging Face `TimeSeriesTransformer` model for price prediction. This repository provides all the necessary components—code, model, and data—to run a backtest and visualize the model's predictions directly on a chart.
 
+## ⚠️ Important Disclaimer
+
+**This project is for educational and research purposes only. It is not financial advice.**
+
+The software, models, and data provided in this repository are intended to demonstrate concepts in algorithmic trading and machine learning. They are not designed or tested for use in live trading environments.
+
+- **High Risk:** Trading in financial markets is inherently risky. Any use of this code, or concepts derived from it, for live trading is done at your own risk. You are solely responsible for any financial losses you may incur.
+- **No Warranty:** This software is provided "as is" without warranty of any kind, express or implied. The author makes no guarantees about its performance, accuracy, or profitability.
+- **Regulatory Status (EU AI Act):** The AI models within this repository could be subject to regulations such as the EU AI Act if used in a commercial or live trading context. By downloading or using this code, you acknowledge that you are responsible for ensuring your own compliance with all applicable laws and regulations.
+- **Not for Professional Use:** This is not a commercial-grade trading tool. Do not use this software with real money.
+
 ## Features
 
 *   **`TransformerPredictionIndicator`**: A custom `bt.Indicator` that loads and runs a `TimeSeriesTransformerForPrediction` model on each bar.
